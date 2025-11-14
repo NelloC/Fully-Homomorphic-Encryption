@@ -1,0 +1,15 @@
+### BIS_MAP_regression.py ###
+numpy
+pandas
+scikit-learn
+concrete-ml 
+
+### xgb.py ###
+numpy
+pandas
+xgboost
+scikit-learn 
+
+
+concrete-ml # Concrete ML
+optuna      # Per l'Hyperparameter Tuning
