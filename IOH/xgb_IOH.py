@@ -1,16 +1,3 @@
-"""
-FHE XGBoost Classification Pipeline with Optuna Hyperparameter Tuning
-
-This script performs the following steps:
-1. Loads time-series data and meta-information from Parquet files.
-2. Defines a complex feature set based on signal processing (constant, slope, std).
-3. Uses Optuna with cross-validation to find the optimal hyperparameters for XGBClassifier.
-4. Trains a final clear-text XGBoost model and evaluates its performance (Accuracy, F1).
-5. Iterates from 2 to 15 bits, training, compiling, and evaluating a Concrete ML 
-   XGBClassifier (FHE compatible) using the best hyperparameters.
-6. Saves clear, quantized clear, and FHE simulated predictions and a final summary.
-"""
-
 from pathlib import Path
 import time
 import sys
@@ -94,10 +81,7 @@ def load_data(folder_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         sys.exit(1)
         
 def objective_xgboost(trial: optuna.Trial, data_train_cv: list, data_test_cv: list, features: list) -> float:
-    """
-    Optuna objective function for XGBoost hyperparameter tuning
-    using cross-validation.
-    """
+
     # Define the hyperparameter search space for the trial
     params = {
         "objective": "binary:logistic",
@@ -148,9 +132,7 @@ def main():
     print(f"Dataset Loaded: {len(X_train):,d} train samples, {len(X_test):,d} test samples.")
     print(f"Positive class rate in test set: {y_test.mean():.2%}")
 
-    # -----------------------------
-    # TRAIN XGBOOST CLEAR MODEL (with Optuna)
-    # -----------------------------
+
     print("\n--- Starting Optuna Hyperparameter Tuning ---")
     
     # Prepare cross-validation folds based on 'cv_split' column in train_data
@@ -174,9 +156,6 @@ def main():
     model = xgb.XGBClassifier(**best_params, random_state=RANDOM_SEED, n_jobs=-1)
     model.fit(X_train, y_train, verbose=False)
 
-    # -----------------------------
-    # EVALUATE CLEAR MODEL
-    # -----------------------------
     start = time.time()
     y_pred_clear = model.predict(X_test)
     clear_time = time.time() - start
@@ -225,7 +204,7 @@ def main():
             # Compile using X_train to determine quantization ranges
             fhe_model.compile(X_train) 
             compile_time = time.time() - start_compile
-            print(f"✅ Compilation completed in {compile_time:.2f}s")
+            print(f"Compilation completed in {compile_time:.2f}s")
 
             # 1. Inference in clear (quantized model, no FHE)
             start_clear_q = time.time()
@@ -238,7 +217,7 @@ def main():
             # 2. Inference simulated in FHE
             start_fhe = time.time()
             # Use fhe="simulate" for quick testing or fhe="execute" for real execution time
-            y_pred_fhe = fhe_model.predict(X_test, fhe="simulate") 
+            y_pred_fhe = fhe_model.predict(X_test, fhe="execute") 
             fhe_time = time.time() - start_fhe
             acc_fhe = accuracy_score(y_test, y_pred_fhe)
             f1_fhe = f1_score(y_test, y_pred_fhe)
@@ -262,7 +241,7 @@ def main():
             })
 
         except Exception as e:
-            print(f"❌ FHE ERROR for n_bits={n_bits}: {e}")
+            print(f"FHE ERROR for n_bits={n_bits}: {e}")
             fhe_results.append({
                 "n_bits": n_bits,
                 "acc_fhe_sim": np.nan,
@@ -275,7 +254,7 @@ def main():
     # Save final summary of FHE evaluation
     df_fhe_results = pd.DataFrame(fhe_results)
     df_fhe_results.to_csv("fhe_evaluation_summary_optuna.csv", index=False)
-    print("\n✅ FHE evaluation summary saved to 'fhe_evaluation_summary_optuna.csv'")
+    print("\nFHE evaluation summary saved to 'fhe_evaluation_summary_optuna.csv'")
 
 if __name__ == "__main__":
     main()
