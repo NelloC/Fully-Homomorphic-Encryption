@@ -1,4 +1,4 @@
-# Fully Homomorphic Encryption (FHE) for Clinical Prediction Models
+# Analysis and Prediction of Time Series with Fully Homomorphic Encryption
 
 This repository hosts Machine Learning pipelines designed for the prediction of critical clinical events (Acute Kidney Injury - AKI, Intraoperative Hypotension - IOH, and BIS-MAP composite) using data derived from **VITALDB**. The primary goal is to explore and implement these predictive models using **Concrete ML** to enable inference in the Fully Homomorphic Encryption (FHE) domain, ensuring data privacy and security.
 
