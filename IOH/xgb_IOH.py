@@ -1,3 +1,17 @@
+"""
+FHE XGBoost Classification Pipeline with Optuna Hyperparameter Tuning
+
+This script performs the following steps:
+1. Loads time-series data and meta-information from Parquet files.
+2. Defines a complex feature set based on signal processing (constant, slope, std).
+3. Uses Optuna with cross-validation to find the optimal hyperparameters for XGBClassifier.
+4. Trains a final clear-text XGBoost model and evaluates its performance (Accuracy, F1).
+5. Iterates from 2 to 15 bits, training, compiling, and evaluating a Concrete ML 
+   XGBClassifier (FHE compatible) using the best hyperparameters.
+6. Saves clear, quantized clear, and FHE simulated predictions and a final summary.
+"""
+
+
 from pathlib import Path
 import time
 import sys
