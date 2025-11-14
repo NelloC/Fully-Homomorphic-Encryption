@@ -1,35 +1,48 @@
-### BIS_MAP_regression.py ###
-# Input Data
+# Python cache and compilation files
+__pycache__/
+*.pyc
+# Temporary Git/VSCode file residue (if any)
+.gitignore.m 
+
+# ------------------------------------
+# DATA INPUT FILES 
+# ------------------------------------
+
+# Input for IOH/XGBoost scripts
+data/
+*.parquet
+
+# Input for BIS_MAP scripts
 Patients_train.csv
 Patients_test.csv
 
-# Generated files/results
-__pycache__/
-*.pyc
+# Input for AKI scripts (decision_tree.py and logistic.py)
+aki_7d_from_api.csv
+interop_from_api.csv
+lab_for_test_from_api.csv
+
+# ------------------------------------
+# GENERATED OUTPUTS, MODELS, AND LOGS
+# ------------------------------------
+
+# General output (Saved models in Pickle format)
+*.pkl
+
+# --- Results for BIS_MAP/LR_EN_SGD_DT.py ---
 saved_reg/
 results_BIS.csv
 results_MAP.csv
 
-
-### xgb.py ###
-# Input Data
-data/
-*.parquet
-
-# Output files
+# --- Results for IOH/xgb_IOH.py (and Optuna) ---
 predictions_clear.csv
 predictions_fhe_*.csv
 fhe_evaluation_summary_optuna.csv
 
-__pycache__/
-*.pyc
+# --- Results for AKI/decision_tree.py ---
+predictions_clear_text_dt.csv
+predictions_fhe_dt.csv
+fhe_evaluation_summary_decision_tree_dt.csv
 
-### xgb_IOH.py ###
-# input data
-data/
-*.parquet
-
-# output files
-predictions_clear.csv
-predictions_fhe_*.csv
-fhe_evaluation_summary_optuna.csv
+# --- Results for AKI/logistic.py ---
+predictions_clear_text_lr.csv
+fhe_results_logistic.csv
