@@ -71,7 +71,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 TEST_SET_LIMIT = 1000 
 BITS_RANGE = range(2, 16)
 DEPTH_RANGE = range(4, 11)
-METRICS_FILE = os.path.join(OUTPUT_FOLDER, "metrics_regression_ongoing.csv")
+METRICS_FILE = os.path.join(OUTPUT_FOLDER, "bis_map_results.csv")
 
 # ================================
 # UTILITY FUNCTIONS
