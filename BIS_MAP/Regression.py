@@ -1,344 +1,304 @@
-"""
-Concrete ML Regression Pipeline (Compatible Models)
-
-This script performs the following steps:
-1. Loads pre-processed patient data (BIS/MAP monitoring).
-2. Defines feature sets based on common medical covariates and drug effects.
-3. Iterates through various compatible regression models (Linear, ElasticNet, SGD, Decision Tree).
-4. Trains the clear-text model, evaluates its performance (MAE/RMSE), and saves parameters.
-5. Iterates from 2 to 15 bits, training, compiling, and executing the model using 
-   Concrete ML for Homomorphic Encryption (FHE) inference.
-6. Stores all clear and FHE predictions/metrics in CSV files.
-"""
-
+import os
 import time
 import pandas as pd
 import numpy as np
 import warnings
-import os
-from pathlib import Path
-
-# ============================================================
-# GENERAL CONFIGURATION
-# ============================================================
-# Define the output directory for results
-OUTPUT_DIR = Path("/Users/aconelli/concrete_ml/LFPAP/LAST_training_LFPAP/results_aki")
-
-# Import Scikit-learn standard libraries for data processing and metrics
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, MinMaxScaler 
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-
-# Import imbalanced-learn for handling imbalanced datasets (SMOTE)
-try:
-    from imblearn.combine import SMOTEENN, SMOTETomek
-except ImportError:
-    print("imbalanced-learn not found. Install with: pip install imbalanced-learn")
-    exit()
-
-# Import standard Scikit-learn models
-from sklearn.linear_model import LogisticRegression as SkLR
-# Note: min_samples_leaf=3 added for better generalization
-from sklearn.tree import DecisionTreeClassifier as SkDT
-# Note: n_estimators=100 and min_samples_leaf=3 added
-from sklearn.ensemble import RandomForestClassifier as SkRF
-from sklearn.svm import LinearSVC as SkSVC
 import xgboost as xgb
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-# --- CONCRETE ML (Native Classes) ---
-# Import Concrete ML models for Fully Homomorphic Encryption (FHE) support
+# ================================
+# CUDA/GPU ACCELERATION DETECTION
+# ================================
 try:
-    from concrete.ml.sklearn import (
-        LogisticRegression as ConcreteLR,
-        DecisionTreeClassifier as ConcreteDT,
-        RandomForestClassifier as ConcreteRF,
-        LinearSVC as ConcreteSVC,
-        XGBClassifier as ConcreteXGB
-    )
-    HAS_CONCRETE = True
-except ImportError as e:
-    print(f"Concrete ML import error: {e}")
-    HAS_CONCRETE = False
+    import torch
+    HAS_CUDA = torch.cuda.is_available()
+    DEVICE_INFO = f"GPU ({torch.cuda.get_device_name(0)})" if HAS_CUDA else "CPU"
+    print(f"{' CUDA environment detected! Accelerator: ' + DEVICE_INFO if HAS_CUDA else ' No CUDA. Using CPU.'}")
+except ImportError:
+    HAS_CUDA = False
+    DEVICE_INFO = "CPU"
+    print("Warning: PyTorch not found. CPU will be used.")
 
-# Suppress warnings for cleaner output
+XGB_TREE_METHOD = 'gpu_hist' if HAS_CUDA else 'hist'
+
+# ================================
+# CONCRETE ML CONFIGURATION
+# ================================
+MODELS_CONFIG = {}
+HAS_CONCRETE = False
+
+print("\nVerifying Concrete ML installation...")
+try:
+    import concrete.ml.sklearn as cmls
+    HAS_CONCRETE = True
+    
+    # Base parameters for XGBoost
+    xgb_params_base = {"n_estimators": 30, "max_depth": 3, "tree_method": XGB_TREE_METHOD}
+    
+    # List of models to test
+    candidates = [
+        ("LinearRegression", "LinearRegression", {}),
+        ("Ridge", "Ridge", {"alpha": 1.0}),
+        ("Lasso", "Lasso", {"alpha": 0.1}),
+        ("ElasticNet", "ElasticNet", {"alpha": 0.1, "l1_ratio": 0.5}),
+        ("SGDRegressor", "SGDRegressor", {"max_iter": 2000, "tol": 1e-3}),
+        ("LinearSVR", "LinearSVR", {"C": 1.0, "max_iter": 2000}),
+        ("DecisionTree", "DecisionTreeRegressor", {"max_depth": 4}),
+        ("RandomForest", "RandomForestRegressor", {"n_estimators": 10, "max_depth": 4}),
+        ("XGBoost", "XGBRegressor", xgb_params_base),
+        ("KNeighbors", "KNeighborsRegressor", {"n_neighbors": 5})
+    ]
+    
+    # Register available models
+    for friendly_name, class_name, params in candidates:
+        if hasattr(cmls, class_name):
+            model_cls = getattr(cmls, class_name)
+            MODELS_CONFIG[friendly_name] = (model_cls, params)
+        else:
+            print(f"     {class_name} not available. Skipping.")
+except ImportError as e:
+    print(f"Concrete ML not installed: {e}")
+
 warnings.filterwarnings('ignore')
 
-# Define file paths for datasets
-AKI_FILE = '/Users/aconelli/concrete_ml/LFPAP/data/aki_7d_from_api.csv'
-INTEROP_FILE = '/Users/aconelli/concrete_ml/LFPAP/data/interop_from_api.csv'
-LAB_FILE = '/Users/aconelli/concrete_ml/LFPAP/data/lab_for_test_from_api.csv'
+# ================================
+# EXECUTION CONFIGURATION
+# ================================
+OUTPUT_FOLDER = "/Users/aconelli/concrete_ml/Pharma_regression/last_train_reg/results_regression_FINAL"
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# ============================================================
-# 1. DATA PREPARATION
-# ============================================================
+TEST_SET_LIMIT = 1000 
+BITS_RANGE = range(2, 16)
+DEPTH_RANGE = range(4, 11)
+METRICS_FILE = os.path.join(OUTPUT_FOLDER, "metrics_regression_ongoing.csv")
 
-def load_data():
-    """
-    Loads and merges datasets, handles missing values, and splits data into training and test sets.
-    """
-    print("Load dataset...")
-    try:
-        # Load and merge CSV files
-        df = pd.read_csv(AKI_FILE)
-        df = df.merge(pd.read_csv(INTEROP_FILE), on='caseid', how='inner')
-        df = df.merge(pd.read_csv(LAB_FILE), on='caseid', how='inner')
-        
-        # Process target variable 'AKI'
-        df['AKI'] = pd.to_numeric(df['AKI'], errors='coerce')
-        df = df.dropna(subset=['AKI'])
-        df['AKI'] = df['AKI'].astype(int)
-        df = df.drop(columns=['caseid'])
-        
-        # Impute missing values with the median strategy
-        imputer = SimpleImputer(strategy='median')
-        X = df.drop(columns=['AKI']).values
-        X = imputer.fit_transform(X)
-        y = df['AKI'].values
-        
-        # Split dataset into training and testing sets (80/20 split)
-        return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    except Exception as e:
-        print(f"Error: {e}")
-        return None, None, None, None 
+# ================================
+# UTILITY FUNCTIONS
+# ================================
 
-# ============================================================
-# 2. EVALUATION AND SAVING FUNCTIONS
-# ============================================================
-
-def get_metrics(y_true, y_pred, time_infer, model_name, type_run, params, bits=None):
+def calculate_metrics(y_true, y_pred, exec_time_total, model_name, scenario, bits, feature_set, target, eval_set_name):
     """
-    Calculates performance metrics (Accuracy, F1, Precision, Recall).
+    Calculates regression metrics and returns a dictionary.
     """
-    acc = accuracy_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    
+    n_samples = len(y_true)
+    time_per_sample = exec_time_total / n_samples if n_samples > 0 else 0
     return {
         "Model": model_name,
-        "Type": type_run,
+        "Target": target,
+        "Feature_Set": feature_set,
+        "Type": scenario,
+        "Eval_Set": eval_set_name, # Distinguishes between Train and Test sets
         "Bits": bits,
-        "Depth": params.get('max_depth'),
-        "Accuracy": acc,
-        "F1_Score": f1,
-        "Precision": prec,
-        "Recall": rec,
-        "Inference_Time_s": time_infer
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
+        "R2": r2_score(y_true, y_pred) if n_samples > 1 else 0,
+        "Total_Time_s": exec_time_total,
+        "Time_Per_Sample_s": time_per_sample,
+        "Samples_Evaluated": n_samples
     }
 
-def save_results(metrics_dict, y_true, y_pred, y_scores, filename_suffix):
+def save_predictions(y_true, y_pred, model_name, target, feature_set, scenario, bits):
     """
-    Saves metrics and predictions to CSV files.
+    Saves true vs predicted values to a CSV file.
     """
-    # Save metrics
-    file_m_name = f"metrics_{filename_suffix}.csv"
-    file_m_path = OUTPUT_DIR / file_m_name
-    
-    df_m = pd.DataFrame([metrics_dict])
-    hdr = not file_m_path.exists()
-    df_m.to_csv(file_m_path, mode='a', index=False, header=hdr)
-    
-    # Save predictions
-    clean_name = metrics_dict['Model'].replace(" ", "_").replace("(", "").replace(")", "")
-    file_p_name = f"preds_{clean_name}_{metrics_dict['Type']}"
-    
-    if 'FHE' in metrics_dict['Type']:
-        bits_str = f"_{metrics_dict['Bits']}bits"
-        depth_str = f"_D{metrics_dict['Depth']}" if metrics_dict['Depth'] is not None else ""
-        file_p_name += f"{bits_str}{depth_str}"
-    
-    file_p_name += ".csv"
-    file_p_path = OUTPUT_DIR / file_p_name
-    
-    df_p = pd.DataFrame({
-        'y_true': y_true,
-        'y_pred': y_pred,
-        'y_score': y_scores if y_scores is not None else np.zeros_like(y_pred)
-    })
-    df_p.to_csv(file_p_path, index=False)
+    filename = f"pred_{target}_{feature_set}_{model_name}_{scenario}_{bits}bits.csv".replace(" ", "_")
+    path = os.path.join(OUTPUT_FOLDER, filename)
+    pd.DataFrame({"y_true": y_true, "y_pred": y_pred}).to_csv(path, index=False)
 
-# ============================================================
-# 3. CLEAR TEXT LOOP (OPTIMIZED)
-# ============================================================
-
-def run_clear_text(X_train, X_test, y_train, y_test):
+def update_metrics_file(metrics_list):
     """
-    Runs evaluation for standard Scikit-learn models (non-encrypted).
-    Uses SMOTETomek for balancing.
+    Overwrites the metrics CSV file with the current list of results.
+    Uses atomic writing (write to temp -> rename) to prevent corruption.
     """
-    print("\nSTARTING CLEAR TEXT EVALUATION (Optimized SMOTE)")
+    try:
+        df_partial = pd.DataFrame(metrics_list)
+        cols_order = ["Model", "Type", "Eval_Set", "Bits", "MAE", "RMSE", "R2",
+                      "Total_Time_s", "Time_Per_Sample_s", "Samples_Evaluated",
+                      "Target", "Feature_Set"]
+        
+        # Keep only columns that exist
+        final_cols = [c for c in cols_order if c in df_partial.columns]
+        df_partial = df_partial[final_cols]
+        
+        tmp_path = METRICS_FILE + ".tmp"
+        df_partial.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, METRICS_FILE)
+    except Exception as e:
+        print(f"[Warning] Could not save metrics: {e}")
+
+def add_time_features(df, target_col, n_lags=3):
+    """
+    Adds Lag and Delta features to the dataframe.
+    Correctly calculates deltas based on past lags to avoid data leakage.
+    """
+    df_new = df.copy()
     
-    # Standard scaler for linear models
-    scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_test_s = scaler.transform(X_test)
+    # 1. Create Lags
+    for lag in range(1, n_lags+1):
+        # Use ffill/bfill to handle initial NaNs
+        df_new[f"{target_col}_lag{lag}"] = df_new[target_col].shift(lag).ffill().bfill()
+        
+    # 2. Create Deltas (Lag_i - Lag_{i+1})
+    for lag in range(1, n_lags):
+        current_lag = f"{target_col}_lag{lag}"
+        prev_lag = f"{target_col}_lag{lag+1}"
+        df_new[f"{target_col}_delta_{lag}_{lag+1}"] = df_new[current_lag] - df_new[prev_lag]
+        
+    df_new.fillna(0, inplace=True) 
+    return df_new
 
-    # Initialize SMOTETomek with partial sampling strategy
-    sm = SMOTETomek(sampling_strategy=0.8, random_state=42)
-
-    # Define models: Name, Instance, Needs Scaling
-    models = [
-        ("Logistic Regression", SkLR(class_weight='balanced', max_iter=1000), True), 
-        ("SVM (Linear)", SkSVC(class_weight='balanced', dual="auto"), True),
-        ("Decision Tree", SkDT(class_weight='balanced', min_samples_leaf=3), False),
-        ("Random Forest", SkRF(class_weight='balanced', n_estimators=100, min_samples_leaf=3), False),
-        ("XGBoost", xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss'), False)
-    ]
-
-    depths = range(4, 11)
+# ================================
+# DATA LOADING
+# ================================
+print("\nLoading Dataset...")
+try:
+    Patients_train_full = pd.read_csv("/Users/aconelli/concrete_ml/Pharma_regression/Patients_train.csv", index_col=0)
+    Patients_test_full = pd.read_csv("/Users/aconelli/concrete_ml/Pharma_regression/Patients_test.csv", index_col=0)
+except FileNotFoundError:
+    print("Files not found. Generating dummy data for testing.")
+    cols = ['age', 'sex', 'height', 'weight', 'bmi', 'lbm', 'mean_HR',
+            'Ce_Prop_Eleveld', 'Ce_Rem_Eleveld', 'Ce_Prop_MAP_Eleveld', 'Ce_Rem_MAP_Eleveld',
+            'Cp_Prop_Eleveld', 'Cp_Rem_Eleveld', 'BIS', 'MAP', 'full_BIS', 'full_MAP']
+    Patients_train_full = pd.DataFrame(np.random.rand(50, len(cols)), columns=cols)
+    Patients_test_full = pd.DataFrame(np.random.rand(20, len(cols)), columns=cols)
+    Patients_train_full[['full_BIS', 'full_MAP']] = 0
+    Patients_test_full[['full_BIS', 'full_MAP']] = 0
     
-    for name, model_inst, needs_scale in models:
+metrics_list = []
+
+# ================================
+# MAIN LOOP
+# ================================
+feature_sets_to_test = ['All']
+
+for feature_set in feature_sets_to_test:
+    print(f"\nFeature Set: {feature_set}")
+
+    # Prepare datasets copies
+    train_bis = Patients_train_full.copy()
+    train_map = Patients_train_full.copy()
+    full_test_bis = Patients_test_full.copy()
+    full_test_map = Patients_test_full.copy()
+
+    # Define base features
+    base_features = [c for c in Patients_train_full.columns if c not in ['BIS','MAP','full_BIS','full_MAP','caseid','Time','train_set']]
+
+    # Add Time Features (Lags/Deltas)
+    train_bis = add_time_features(train_bis, 'BIS')
+    full_test_bis = add_time_features(full_test_bis, 'BIS')
+    train_map = add_time_features(train_map, 'MAP')
+    full_test_map = add_time_features(full_test_map, 'MAP')
+    
+    # Collect all feature columns
+    X_cols = base_features + [c for c in train_bis.columns if 'lag' in c or 'delta' in c]
+    X_cols = list(set(X_cols)) # Remove duplicates
+
+    targets = {'BIS': (train_bis, full_test_bis), 'MAP': (train_map, full_test_map)}
+
+    for target, (df_tr, df_te) in targets.items():
         
-        # Select appropriate feature set (scaled or unscaled)
-        X_tr_base = X_train_s if needs_scale else X_train
-        X_te = X_test_s if needs_scale else X_test
+        valid_cols = [c for c in X_cols if c in df_tr.columns and c in df_te.columns]
+        if len(df_tr) == 0 or len(df_te) == 0: continue
+
+        # Scaling
+        scaler = MinMaxScaler(feature_range=(0, 1))
         
-        # Apply SMOTETomek resampling to the training set
-        X_res, y_res = sm.fit_resample(X_tr_base, y_train) 
+        # Fit on Train
+        X_train = scaler.fit_transform(df_tr[valid_cols])
+        y_train = df_tr[target].values
         
-        # Determine depth iteration
-        current_depths = depths if name in ["Decision Tree", "Random Forest", "XGBoost"] else [None]
-        
-        for d in current_depths:
-            display_name = f"{name} (D={d})" if d else name
+        # Transform on Test (limited if configured)
+        if TEST_SET_LIMIT:
+            df_te_limited = df_te.iloc[:TEST_SET_LIMIT]
+        else:
+            df_te_limited = df_te
             
-            # Set parameters including max_depth
-            if d: 
-                model_inst.set_params(max_depth=d)
-            
-            print(f"    Training {display_name}...", end="\r")
-            
+        X_test = scaler.transform(df_te_limited[valid_cols])
+        y_test = df_te_limited[target].values
+
+        print(f"      Target: {target} | Train Size: {len(X_train)} | Test Size: {len(X_test)}")
+
+        for model_name, (concrete_class, params) in MODELS_CONFIG.items():
+            # ===========================
+            # 1. Cleartext Baseline (ON TRAIN SET)
+            # ===========================
             try:
-                # Fit model on balanced dataset
-                model_inst.fit(X_res, y_res)
-                
-                # Inference
-                t0 = time.time()
-                y_pred = model_inst.predict(X_te)
-                t_inf = time.time() - t0
-                
-                # Get prediction scores if available
-                if hasattr(model_inst, "predict_proba"):
-                    y_scores = model_inst.predict_proba(X_te)[:, 1]
-                elif hasattr(model_inst, "decision_function"):
-                    y_scores = model_inst.decision_function(X_te)
+                # Use native XGBoost class for clear text baseline if applicable
+                if model_name == "XGBoost":
+                     model_clear_cls = xgb.XGBRegressor
                 else:
-                    y_scores = y_pred 
+                    model_clear_cls = concrete_class 
+                    
+                model_clear = model_clear_cls(**params)
+                t0 = time.time()
                 
-                # Calculate and save metrics
-                m = get_metrics(y_test, y_pred, t_inf, name, "Clear_Optimized", {"max_depth": d})
-                print(f"    {display_name}: Acc={m['Accuracy']:.4f} | F1={m['F1_Score']:.4f} | Prec={m['Precision']:.4f} | Rec={m['Recall']:.4f} | Time={t_inf:.5f}s")
+                # Fit on Train
+                model_clear.fit(X_train, y_train)
                 
-                save_results(m, y_test, y_pred, y_scores, "clear_text_optimized")
+                # --- MODIFIED: Predict on TRAIN SET ---
+                y_pred_clear = model_clear.predict(X_train)
+                t_clear = time.time() - t0
                 
+                # Calculate metrics on Training data
+                m = calculate_metrics(y_train, y_pred_clear, t_clear, model_name, "Clear_Train", 0, feature_set, target, "Train")
+                metrics_list.append(m)
+                
+                # IMMEDIATE SAVE
+                update_metrics_file(metrics_list)
+                
+                print(f"       Clear (Train): MAE={m['MAE']:.3f} | RMSE={m['RMSE']:.3f} | R2={m['R2']:.3f}")
             except Exception as e:
-                print(f"    Error {display_name}: {e}")
+                print(f"        Clear Error: {e}")
+                continue
 
-# ============================================================
-# 4. FHE LOOP (OPTIMIZED)
-# ============================================================
+            if not HAS_CONCRETE: continue
 
-def run_fhe(X_train, X_test, y_train, y_test):
-    """
-    Runs evaluation for Concrete ML models (FHE-compatible).
-    Uses MinMax scaling and SMOTETomek.
-    """
-    if not HAS_CONCRETE: return
-    print("\nSTARTING FHE EVALUATION (Optimized, extended to 12 bits)")
+            # ===========================
+            # 2. FHE Execution (ON TEST SET)
+            # ===========================
+            concrete_model_cls = concrete_class
+            # Iterate depth only for tree-based models
+            depths_to_cycle = DEPTH_RANGE if model_name in ["DecisionTree", "RandomForest", "XGBoost"] else [None]
 
-    # Limit test set size for FHE performance
-    TEST_SET_LIMIT = 100
+            for bits in BITS_RANGE:
+                for d in depths_to_cycle:
+                    display_name = f"FHE ({bits}b)"
+                    try:
+                        fhe_params = params.copy()
+                        fhe_params['n_bits'] = bits
+                        if 'n_jobs' in fhe_params: del fhe_params['n_jobs']
+                        
+                        if d is not None:
+                            fhe_params['max_depth'] = d
+                            display_name = f"FHE ({bits}b, D={d})"
+                        elif 'max_depth' in fhe_params:
+                            del fhe_params['max_depth']
 
-    # MinMax Scaling is mandatory for FHE
-    fhe_scaler = MinMaxScaler(feature_range=(0, 1))
-    X_train_fhe = fhe_scaler.fit_transform(X_train)
-    X_test_fhe = fhe_scaler.transform(X_test)
+                        # Train on Train set
+                        model_fhe = concrete_model_cls(**fhe_params)
+                        model_fhe.fit(X_train, y_train)
+                        
+                        # Compile
+                        model_fhe.compile(X_train)
+                        
+                        # Execute on Test set (Limited samples)
+                        t_start = time.time()
+                        y_pred_fhe = model_fhe.predict(X_test, fhe="execute")
+                        t_total = time.time() - t_start
+                        
+                        scenario_name = display_name.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "_").replace("=", "")
+                        
+                        m_fhe = calculate_metrics(y_test, y_pred_fhe, t_total, model_name, scenario_name, bits, feature_set, target, "Test")
+                        metrics_list.append(m_fhe)
+                        
+                        # IMMEDIATE SAVE
+                        update_metrics_file(metrics_list)
+                        
+                        save_predictions(y_test, y_pred_fhe, model_name, target, feature_set, scenario_name, bits)
+                        print(f"            Done {display_name}: MAE={m_fhe['MAE']:.3f} | R2={m_fhe['R2']:.3f}")
+                        
+                    except Exception as e:
+                        print(f"            Error {display_name}: {e}")
 
-    # Apply test set limit
-    if TEST_SET_LIMIT and TEST_SET_LIMIT < len(X_test_fhe):
-        X_test_fhe = X_test_fhe[:TEST_SET_LIMIT]
-        y_test = y_test[:TEST_SET_LIMIT]
-
-    # Initialize SMOTETomek
-    sm = SMOTETomek(sampling_strategy=0.8, random_state=42)
-    
-    # Apply SMOTETomek to scaled training set
-    X_train_fhe_res, y_train_fhe_res = sm.fit_resample(X_train_fhe, y_train) 
-    
-    # Extended bit range for testing
-    bits_list = range(2, 16) # Test 7, 8, 9, 10, 11, 12 bits
-    depths = range(4, 11)   
-    
-    models_fhe = [
-        ("Random Forest", ConcreteRF, False), 
-        ("XGBoost", ConcreteXGB, False),
-        ("SVM (Linear)", ConcreteSVC, True)
-    ]
-    
-    for name, model_cls, needs_linear_setup in models_fhe:
-        
-        current_depths = depths if name in ["Decision Tree", "Random Forest", "XGBoost"] else [None]
-        
-        for b in bits_list:
-            for d in current_depths:
-                display_name = f"{name} FHE (B={b}, D={d})" if d else f"{name} FHE (B={b})"
-                print(f"    Processing {display_name}...", end="\r")
-                
-                try:
-                    params = {"n_bits": b}
-                    if d: params["max_depth"] = d
-                    # Ensure n_estimators matches Scikit-learn RF for consistency
-                    if name == "Random Forest": params["n_estimators"] = 100 
-                    
-                    model = model_cls(**params)
-                    
-                    # Train on balanced and scaled dataset
-                    model.fit(X_train_fhe_res, y_train_fhe_res) 
-                    
-                    # Compilation
-                    start_comp = time.time()
-                    model.compile(X_train_fhe_res) 
-                    t_comp = time.time() - start_comp
-                    
-                    # Inference
-                    fhe_mode = "execute" 
-                    start_inf = time.time()
-                    y_pred = model.predict(X_test_fhe, fhe=fhe_mode) 
-                    t_inf = time.time() - start_inf
-                    
-                    y_scores = y_pred
-                    
-                    m = get_metrics(y_test, y_pred, t_inf, name, f"FHE_Optimized", {"max_depth": d}, bits=b)
-                    m["Compile_Time_s"] = t_comp
-                    m["FHE_Mode"] = fhe_mode
-                    
-                    print(f"    {display_name}: Acc={m['Accuracy']:.4f} | F1={m['F1_Score']:.4f} | Prec={m['Precision']:.4f} | Rec={m['Recall']:.4f} | Time={t_inf:.5f}s (Comp Time: {t_comp:.1f}s)")
-                    
-                    save_results(m, y_test, y_pred, y_scores, "fhe_optimized")
-
-                except Exception as e:
-                    print(f"    Error FHE {display_name}: {e}")
-
-# ============================================================
-# MAIN EXECUTION
-# ============================================================
-
-if __name__ == "__main__":
-    
-    if not OUTPUT_DIR.exists():
-        print(f"Creating results directory: {OUTPUT_DIR}")
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    X_train, X_test, y_train, y_test = load_data()
-    
-    if X_train is not None:
-        # Run optimized Clear Text evaluation
-        run_clear_text(X_train, X_test, y_train, y_test)
-        
-        # Run optimized FHE evaluation
-        run_fhe(X_train, X_test, y_train, y_test)
-        
-        print(f"\nAll tasks completed. Check files in '{OUTPUT_DIR}'.")
-    else:
-        print("\nExecution interrupted due to data loading error.")
+print(f"\nProcessing completed. Final file: {METRICS_FILE}")
