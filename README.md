@@ -21,7 +21,7 @@ The project is structured into three main domains, each focusing on a different 
     * `requirements.txt` (Project dependencies)
     * `README.md`
 
-## 🛠️ Installation and Setup
+##  Installation and Setup
 
 To run the pipelines locally, you must install the required Python libraries.
 
