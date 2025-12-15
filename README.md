@@ -52,21 +52,21 @@ The data preprocessing, feature extraction, and initial feature engineering meth
 ### 1. AKI (Acute Kidney Injury) Prediction
 
 * **Models:** Logistic Regression, Decision Tree
-* **Pipeline Files:** `AKI/logistic.py`, `AKI/decision_tree.py`
+* **Pipeline Files:** `AKI/Classification.py`
 * **Pre-processing/Feature Engineering Credit:** The data preparation methodology is based on the work from:
     * **Original Project:** [LFPAP](https://github.com/warriorod/LFPAP)
 
 ### 2. BIS-MAP Prediction
 
 * **Models:** Linear models (LR, ElasticNet, SGD) and Decision Tree
-* **Pipeline File:** `BIS_MAP/LR_EN_SGD_DT.py`
+* **Pipeline File:** `BIS_MAP/Regression.py`
 * **Pre-processing/Feature Engineering Credit:** The methodology for feature extraction and analysis is based on the work from:
     * **Original Project:** [BIS-MAP-Pred](https://github.com/BobAubouin/BIS-MAP-Pred)
 
 ### 3. IOH (Intraoperative Hypotension) Prediction
 
 * **Model:** XGBoost Classifier with FHE implementation
-* **Pipeline File:** `IOH/xgb_IOH.py`
+* **Pipeline File:** `IOH/Classification.py`
 * **Pre-processing/Feature Engineering Credit:** The feature engineering and data preparation methods are based on the work from:
     * **Original Project:** [hypotension\_pred](https://github.com/BobAubouin/hypotension_pred)
 
@@ -79,4 +79,4 @@ To run a specific pipeline, ensure that all necessary input data files (e.g., CS
 **Example Execution (IOH Pipeline):**
 
 ```bash
-python IOH/xgb_IOH.py
+python IOH/Classification.py
