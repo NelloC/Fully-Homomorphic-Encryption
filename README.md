@@ -12,12 +12,11 @@ The project is structured into three main domains, each focusing on a different 
 
 * .
     * **AKI/**
-        * `decision_tree.py` (Decision Tree + FHE for AKI prediction)
-        * `logistic.py` (Logistic Regression + FHE for AKI prediction)
+        * `Classification.py` (FHE for AKI prediction)
     * **BIS_MAP/**
-        * `LR_EN_SGD_DT.py` (Linear/Decision Tree models for BIS-MAP prediction)
+        * `Regression.py` (FHE for BIS-MAP prediction)
     * **IOH/**
-        * `xgb_IOH.py` (XGBoost + Optuna + FHE pipeline for IOH prediction)
+        * `Classification.py` (XGBoost + Optuna + FHE pipeline for IOH prediction)
     * `requirements.txt` (Project dependencies)
     * `README.md`
 
